@@ -229,8 +229,8 @@ pub fn can_cast_types(from_type: &DataType, to_type: &DataType) -> bool {
         }
         (Timestamp(_, _), Int64) => true,
         (Int64, Timestamp(_, _)) => true,
-        (Date64, Timestamp(_, None)) => true,
-        (Date32, Timestamp(_, None)) => true,
+        (Date64, Timestamp(_, _)) => true,
+        (Date32, Timestamp(_, _)) => true,
         (
             Timestamp(_, _),
             Timestamp(_, _)
