@@ -77,6 +77,7 @@ impl<'a> Default for CastOptions<'a> {
 ///
 /// If this function returns true to stay consistent with the `cast` kernel below.
 pub fn can_cast_types(from_type: &DataType, to_type: &DataType) -> bool {
+    println!("Checking cast from {} to {}", from_type, to_type);
     use self::DataType::*;
     use self::IntervalUnit::*;
     use self::TimeUnit::*;
@@ -229,7 +230,7 @@ pub fn can_cast_types(from_type: &DataType, to_type: &DataType) -> bool {
         }
         (Timestamp(_, _), _) if to_type.is_integer() => true,
         (_, Timestamp(_, _)) if from_type.is_integer() => true,
-        (Date64, Timestamp(_, None)) => true,
+        (Date64, Timestamp(_, _)) => true,
         (Date32, Timestamp(_, None)) => true,
         (
             Timestamp(_, _),
@@ -1958,7 +1959,7 @@ pub fn cast_with_options(
                 .as_primitive::<Date64Type>()
                 .unary::<_, TimestampMicrosecondType>(|x| x * (MICROSECONDS / MILLISECONDS)),
         )),
-        (Date64, Timestamp(TimeUnit::Nanosecond, None)) => Ok(Arc::new(
+        (Date64, Timestamp(TimeUnit::Nanosecond, _)) => Ok(Arc::new(
             array
                 .as_primitive::<Date64Type>()
                 .unary::<_, TimestampNanosecondType>(|x| x * (NANOSECONDS / MILLISECONDS)),
