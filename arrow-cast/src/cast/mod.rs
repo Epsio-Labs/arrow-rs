@@ -259,8 +259,7 @@ pub fn can_cast_types(from_type: &DataType, to_type: &DataType) -> bool {
         }
         (Timestamp(_, _), _) if to_type.is_numeric() => true,
         (_, Timestamp(_, _)) if from_type.is_numeric() => true,
-        (Date64, Timestamp(_, None)) => true,
-        (Date32, Timestamp(_, None)) => true,
+        (Date32 | Date64, Timestamp(_, _)) => true,
         (
             Timestamp(_, _),
             Timestamp(_, _)
