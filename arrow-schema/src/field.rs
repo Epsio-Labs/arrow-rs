@@ -51,7 +51,7 @@ pub struct Field {
 // it doesn't contain these dictionary properties too.
 impl PartialEq for Field {
     fn eq(&self, other: &Self) -> bool {
-        self.name == other.name
+        self.name.to_lowercase() == other.name.to_lowercase()
             && self.data_type == other.data_type
             && self.nullable == other.nullable
             && self.metadata == other.metadata
@@ -68,8 +68,8 @@ impl PartialOrd for Field {
 
 impl Ord for Field {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.name
-            .cmp(other.name())
+        self.name.to_lowercase()
+            .cmp(&other.name().to_lowercase())
             .then_with(|| self.data_type.cmp(other.data_type()))
             .then_with(|| self.nullable.cmp(&other.nullable))
             .then_with(|| {
@@ -102,7 +102,7 @@ impl Ord for Field {
 
 impl Hash for Field {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.name.hash(state);
+        self.name.to_lowercase().hash(state);
         self.data_type.hash(state);
         self.nullable.hash(state);
 
@@ -566,7 +566,7 @@ impl Field {
     /// * self.metadata is a superset of other.metadata
     /// * all other fields are equal
     pub fn contains(&self, other: &Field) -> bool {
-        self.name == other.name
+        self.name.to_lowercase() == other.name.to_lowercase()
         && self.data_type.contains(&other.data_type)
         && self.dict_id == other.dict_id
         && self.dict_is_ordered == other.dict_is_ordered
