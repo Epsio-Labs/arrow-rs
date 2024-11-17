@@ -161,6 +161,9 @@ pub fn can_cast_types(from_type: &DataType, to_type: &DataType) -> bool {
         (FixedSizeList(inner, size), FixedSizeList(inner_to, size_to)) if size == size_to => {
             can_cast_types(inner.data_type(), inner_to.data_type())
         }
+        // for json casting
+        (Utf8 | LargeUtf8, List(_)) => true,
+        (Utf8 | LargeUtf8, Struct(_)) => true,
         (_, List(list_to)) => can_cast_types(from_type, list_to.data_type()),
         (_, LargeList(list_to)) => can_cast_types(from_type, list_to.data_type()),
         (_, FixedSizeList(list_to, size)) if *size == 1 => {
