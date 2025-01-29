@@ -164,6 +164,8 @@ pub fn can_cast_types(from_type: &DataType, to_type: &DataType) -> bool {
         // for json casting
         (Utf8 | LargeUtf8, List(_)) => true,
         (Utf8 | LargeUtf8, Struct(_)) => true,
+        // for uuid casting to text
+        (FixedSizeBinary(16), Utf8 | LargeUtf8) => true,
         (_, List(list_to)) => can_cast_types(from_type, list_to.data_type()),
         (_, LargeList(list_to)) => can_cast_types(from_type, list_to.data_type()),
         (_, FixedSizeList(list_to, size)) if *size == 1 => {
