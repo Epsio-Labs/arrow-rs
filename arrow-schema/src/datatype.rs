@@ -587,7 +587,7 @@ impl DataType {
 pub const DECIMAL128_MAX_PRECISION: u8 = 38;
 
 /// The maximum scale for [DataType::Decimal128] values
-pub const DECIMAL128_MAX_SCALE: i8 = 38;
+pub const DECIMAL128_MAX_SCALE: i8 = 18;
 
 /// The maximum precision for [DataType::Decimal256] values
 pub const DECIMAL256_MAX_PRECISION: u8 = 76;
