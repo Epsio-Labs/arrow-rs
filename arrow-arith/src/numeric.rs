@@ -865,16 +865,13 @@ fn decimal_op<T: DecimalType>(
         }
         Op::Mul | Op::MulWrapping => {
             let result_precision = p1.saturating_add(p2 + 1).min(T::MAX_PRECISION);
-            let result_scale = s1.saturating_add(*s2);
+            let mut result_scale = s1.saturating_add(*s2);
             if result_scale > T::MAX_SCALE {
                 // SQL standard says that if the resulting scale of a multiply operation goes
                 // beyond the maximum, rounding is not acceptable and thus an error occurs
-                return Err(ArrowError::InvalidArgumentError(format!(
-                    "Output scale of {} {op} {} would exceed max scale of {}",
-                    l.data_type(),
-                    r.data_type(),
-                    T::MAX_SCALE
-                )));
+
+                // In Epsio, we've decided to round...
+                result_scale = T::MAX_SCALE;
             }
 
             try_op!(l, l_s, r, r_s, l.mul_checked(r))
