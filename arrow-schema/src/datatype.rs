@@ -19,7 +19,9 @@ use std::fmt;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use crate::{ArrowError, Field, FieldRef, Fields, UnionFields};
+use crate::{
+    extract_enum_schema_and_name, json_type, ArrowError, Field, FieldRef, Fields, UnionFields,
+};
 
 /// Datatypes supported by this implementation of Apache Arrow.
 ///
@@ -488,17 +490,23 @@ impl fmt::Display for DataType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match &self {
             DataType::Struct(fields) => {
-                write!(f, "Struct(")?;
-                if !fields.is_empty() {
-                    let fields_str = fields
-                        .iter()
-                        .map(|f| format!("{} {}", f.name(), f.data_type()))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    write!(f, "{fields_str}")?;
+                if *self == json_type() {
+                    write!(f, "json")
+                } else if let Some((schema_name, enum_name)) = extract_enum_schema_and_name(self) {
+                    write!(f, "{schema_name}.{enum_name}")
+                } else {
+                    write!(f, "Struct(")?;
+                    if !fields.is_empty() {
+                        let fields_str = fields
+                            .iter()
+                            .map(|f| format!("{} {}", f.name(), f.data_type()))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        write!(f, "{}", fields_str)?;
+                    }
+                    write!(f, ")")?;
+                    Ok(())
                 }
-                write!(f, ")")?;
-                Ok(())
             }
             _ => write!(f, "{self:?}"),
         }
