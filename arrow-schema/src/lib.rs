@@ -25,7 +25,6 @@
 #![warn(missing_docs)]
 
 mod datatype;
-
 pub use datatype::*;
 use std::fmt::Display;
 mod datatype_display;
@@ -43,6 +42,8 @@ use std::ops;
 
 #[cfg(feature = "ffi")]
 pub mod ffi;
+mod custom_type;
+pub use custom_type::*;
 
 /// Options that define the sort order of a given column
 ///
