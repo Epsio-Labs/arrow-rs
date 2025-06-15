@@ -18,7 +18,9 @@
 use std::str::FromStr;
 use std::sync::Arc;
 
-use crate::{extract_enum_schema_and_name, json_type, ArrowError, Field, FieldRef, Fields, UnionFields};
+use crate::{
+    extract_enum_schema_and_name, json_type, ArrowError, Field, FieldRef, Fields, UnionFields,
+};
 
 /// Datatypes supported by this implementation of Apache Arrow.
 ///
