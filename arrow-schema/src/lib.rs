@@ -39,9 +39,9 @@ mod schema;
 pub use schema::*;
 use std::ops;
 
+mod custom_type;
 #[cfg(feature = "ffi")]
 pub mod ffi;
-mod custom_type;
 pub use custom_type::*;
 
 /// Options that define the sort order of a given column
