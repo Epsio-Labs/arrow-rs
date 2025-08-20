@@ -18,9 +18,7 @@
 use std::str::FromStr;
 use std::sync::Arc;
 
-use crate::{
-    extract_enum_schema_and_name, json_type, tsvector_type, ArrowError, Field, FieldRef, Fields, UnionFields
-};
+use crate::{bit_type, extract_enum_schema_and_name, json_type, tsvector_type, ArrowError, Field, FieldRef, Fields, UnionFields};
 
 /// Datatypes supported by this implementation of Apache Arrow.
 ///
@@ -505,6 +503,9 @@ impl fmt::Display for DataType {
                 }
                 else if *self == tsvector_type() {
                     write!(f, "tsvector")
+                }
+                else if *self == bit_type() {
+                    write!(f, "varbit")
                 }
                 else if let Some((schema_name, enum_name)) = extract_enum_schema_and_name(self) {
                     write!(f, "{schema_name}.{enum_name}")
