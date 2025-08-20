@@ -14,6 +14,14 @@ pub fn tsvector_type() -> DataType {
     DataType::Struct(tsvector_struct)
 }
 
+
+/// We represent the bit / bit varying type as a custom arrow struct, with one field containing the
+/// bit string as text
+pub fn bit_type() -> DataType {
+    let bit_struct = Fields::from(vec![Field::new("bit", DataType::Utf8, false)]);
+    DataType::Struct(bit_struct)
+}
+
 pub fn enum_type(schema_name: String, enum_name: String) -> DataType {
     let enum_struct = Fields::from(vec![
         Field::new("enum", DataType::Utf8, false),
