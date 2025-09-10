@@ -242,6 +242,9 @@ fn arithmetic_op(
             (Duration(_) | Interval(_), Date32 | Date64 | Timestamp(_, _)) if op.commutative() => {
                 arithmetic_op(op, rhs, lhs)
             }
+            ((Interval(_), num) | (num, Interval(_))) if num.is_numeric() && matches!(op, Op::Mul  | Op::Div) => {
+                arithmetic_op(op, lhs, rhs)
+            }
             _ => Err(ArrowError::InvalidArgumentError(
               format!("Invalid arithmetic operation: {l_t} {op} {r_t}")
             ))
