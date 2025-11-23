@@ -494,40 +494,6 @@ pub enum UnionMode {
     Dense,
 }
 
-impl fmt::Display for DataType {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match &self {
-            DataType::Struct(fields) => {
-                if *self == json_type() {
-                    write!(f, "json")
-                }
-                else if *self == tsvector_type() {
-                    write!(f, "tsvector")
-                }
-                else if *self == bit_type() {
-                    write!(f, "varbit")
-                }
-                else if let Some((schema_name, enum_name)) = extract_enum_schema_and_name(self) {
-                    write!(f, "{schema_name}.{enum_name}")
-                } else {
-                    write!(f, "Struct(")?;
-                    if !fields.is_empty() {
-                        let fields_str = fields
-                            .iter()
-                            .map(|f| format!("{} {}", f.name(), f.data_type()))
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        write!(f, "{}", fields_str)?;
-                    }
-                    write!(f, ")")?;
-                    Ok(())
-                }
-            }
-            _ => write!(f, "{self:?}"),
-        }
-    }
-}
-
 /// Parses `str` into a `DataType`.
 ///
 /// This is the reverse of [`DataType`]'s `Display`

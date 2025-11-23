@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::DataType;
+use crate::{bit_type, extract_enum_schema_and_name, json_type, tsvector_type, DataType};
 use std::fmt::Display;
 use std::{collections::HashMap, fmt};
 
@@ -126,16 +126,29 @@ impl Display for DataType {
                 )
             }
             Self::Struct(fields) => {
-                write!(f, "Struct(")?;
-                if !fields.is_empty() {
-                    let fields_str = fields
-                        .iter()
-                        .map(|field| format_field(field))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    write!(f, "{fields_str}")?;
+                if *self == json_type() {
+                    write!(f, "json")?;
                 }
-                write!(f, ")")?;
+                else if *self == tsvector_type() {
+                    write!(f, "tsvector")?;
+                }
+                else if *self == bit_type() {
+                    write!(f, "varbit")?;
+                }
+                else if let Some((schema_name, enum_name)) = extract_enum_schema_and_name(self) {
+                    write!(f, "{schema_name}.{enum_name}")?;
+                } else {
+                    write!(f, "Struct(")?;
+                    if !fields.is_empty() {
+                        let fields_str = fields
+                            .iter()
+                            .map(|field| format_field(field))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        write!(f, "{fields_str}")?;
+                    }
+                    write!(f, ")")?;
+                }
                 Ok(())
             }
             Self::Union(union_fields, union_mode) => {
