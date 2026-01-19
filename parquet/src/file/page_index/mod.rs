@@ -22,3 +22,4 @@
 pub mod column_index;
 pub mod index_reader;
 pub mod offset_index;
+pub mod page_metadata;
