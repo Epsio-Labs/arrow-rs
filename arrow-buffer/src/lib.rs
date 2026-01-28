@@ -50,6 +50,7 @@ mod bigint;
 pub use bigint::i256;
 
 mod bytes;
+pub use bytes::Bytes;
 
 mod native;
 pub use native::*;

@@ -26,6 +26,8 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use crate::basic::{Compression, Encoding, PageType};
+use crate::column::page::Page;
+use crate::compression::{CodecOptions, create_codec};
 use crate::errors::{ParquetError, Result};
 use crate::file::metadata::thrift::PageHeader;
 use crate::file::metadata::ParquetMetaData;
@@ -131,9 +133,13 @@ impl CompressedPage {
         self.info.column_idx
     }
 
-    /// Get the page index within the column (for ordering).
-    /// Note: This is the index in the pages list, including dictionary pages.
-    pub fn page_list_idx(&self) -> usize {
+    /// Get the data page index within the column.
+    ///
+    /// This returns the index among data pages only (0-indexed). Dictionary pages
+    /// have index 0, same as the first data page. To get the actual position in the
+    /// page list for use with [`RowGroupPageBasedReader::push_page`], use
+    /// enumeration when iterating through pages from [`RowGroupPageIndex::pages_for_column`].
+    pub fn data_page_idx(&self) -> usize {
         self.info.page_idx
     }
 
@@ -150,6 +156,118 @@ impl CompressedPage {
     /// Get the uncompressed size (for allocating decompression buffer).
     pub fn uncompressed_size(&self) -> usize {
         self.info.uncompressed_size as usize
+    }
+
+    /// Decompress this page and return a [`Page`] ready for use with
+    /// [`RowGroupPageBasedReader::push_page`].
+    ///
+    /// # Arguments
+    /// * `codec_options` - Options for the decompression codec
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use parquet::compression::CodecOptions;
+    ///
+    /// let page = compressed_page.decompress(&CodecOptions::default())?;
+    /// reader.push_page(column_idx, page_idx, page)?;
+    /// ```
+    pub fn decompress(&self) -> Result<Page> {
+        let info = &self.info;
+        let compressed_data = &self.data;
+
+        // Get codec for decompression (None for UNCOMPRESSED)
+        let mut codec = create_codec(info.compression, &CodecOptions::default())?;
+
+        // For DATA_PAGE_V2, rep/def levels are stored uncompressed at the beginning.
+        // Only the values portion may be compressed, controlled by is_compressed flag.
+        let offset: usize;
+        let can_decompress: bool;
+
+        if info.page_type == PageType::DATA_PAGE_V2 {
+            let def_len = info.def_levels_byte_len.unwrap_or(0) as usize;
+            let rep_len = info.rep_levels_byte_len.unwrap_or(0) as usize;
+            offset = def_len + rep_len;
+            // When is_compressed flag is missing, the page is considered compressed
+            can_decompress = info.is_compressed.unwrap_or(true);
+        } else {
+            offset = 0;
+            can_decompress = true;
+        }
+
+        let buffer = match codec.as_mut() {
+            Some(decompressor) if can_decompress => {
+                let uncompressed_size = info.uncompressed_size as usize;
+                if offset > compressed_data.len() || offset > uncompressed_size {
+                    return Err(ParquetError::General("Invalid page header".to_string()));
+                }
+                let decompressed_size = uncompressed_size - offset;
+                let mut decompressed = Vec::with_capacity(uncompressed_size);
+                // Copy uncompressed prefix (rep/def levels for V2)
+                decompressed.extend_from_slice(&compressed_data[..offset]);
+                // Decompress the rest if there's data to decompress
+                if decompressed_size > 0 {
+                    let compressed = &compressed_data[offset..];
+                    decompressor.decompress(compressed, &mut decompressed, Some(decompressed_size))?;
+                }
+
+                if decompressed.len() != uncompressed_size {
+                    return Err(ParquetError::General(format!(
+                        "Actual decompressed size doesn't match expected ({} vs {})",
+                        decompressed.len(),
+                        uncompressed_size
+                    )));
+                }
+
+                Bytes::from(decompressed)
+            }
+            _ => compressed_data.clone(),
+        };
+
+        // Build the Page based on page type
+        match info.page_type {
+            PageType::DICTIONARY_PAGE => Ok(Page::DictionaryPage {
+                buf: buffer,
+                num_values: info.num_values,
+                encoding: info.encoding,
+                is_sorted: info.is_sorted.unwrap_or(false),
+            }),
+            PageType::DATA_PAGE => Ok(Page::DataPage {
+                buf: buffer,
+                num_values: info.num_values,
+                encoding: info.encoding,
+                def_level_encoding: info.def_level_encoding.ok_or_else(|| {
+                    ParquetError::General("DATA_PAGE missing def_level_encoding".to_string())
+                })?,
+                rep_level_encoding: info.rep_level_encoding.ok_or_else(|| {
+                    ParquetError::General("DATA_PAGE missing rep_level_encoding".to_string())
+                })?,
+                statistics: None,
+            }),
+            PageType::DATA_PAGE_V2 => Ok(Page::DataPageV2 {
+                buf: buffer,
+                num_values: info.num_values,
+                encoding: info.encoding,
+                num_nulls: info.num_nulls.ok_or_else(|| {
+                    ParquetError::General("DATA_PAGE_V2 missing num_nulls".to_string())
+                })?,
+                num_rows: info.num_rows.ok_or_else(|| {
+                    ParquetError::General("DATA_PAGE_V2 missing num_rows".to_string())
+                })?,
+                def_levels_byte_len: info.def_levels_byte_len.ok_or_else(|| {
+                    ParquetError::General("DATA_PAGE_V2 missing def_levels_byte_len".to_string())
+                })?,
+                rep_levels_byte_len: info.rep_levels_byte_len.ok_or_else(|| {
+                    ParquetError::General("DATA_PAGE_V2 missing rep_levels_byte_len".to_string())
+                })?,
+                is_compressed: info.is_compressed.unwrap_or(true),
+                statistics: None,
+            }),
+            other => Err(ParquetError::General(format!(
+                "Unsupported page type: {:?}",
+                other
+            ))),
+        }
     }
 }
 
@@ -449,7 +567,7 @@ impl RowGroupPageIndex {
     /// # Returns
     /// A vector of vectors, where `result[column_idx]` contains the compressed pages
     /// for that column in order (dictionary page first if present, then data pages).
-    pub fn extract_compressed_pages(&self, row_group_bytes: &Bytes) -> Vec<Vec<CompressedPage>> {
+    pub fn extract_compressed_pages(&self, row_group_bytes: &Bytes) -> impl Iterator<Item = CompressedPage> {
         self.pages
             .iter()
             .map(|column_pages| {
@@ -462,9 +580,8 @@ impl RowGroupPageIndex {
                             data: row_group_bytes.slice(range),
                         }
                     })
-                    .collect()
             })
-            .collect()
+            .flatten()
     }
 
     /// Extract a single compressed page from row group bytes.
@@ -534,5 +651,133 @@ mod tests {
 
         assert_eq!(page.data_byte_range(), 120..620);
         assert_eq!(page.full_byte_range(), 100..620);
+    }
+
+    #[test]
+    fn test_compressed_page_decompress() {
+        use crate::arrow::page_based_reader::RowGroupPageBasedReader;
+        use crate::arrow::ArrowWriter;
+        use crate::file::properties::WriterProperties;
+        use arrow_array::{ArrayRef, Int32Array, RecordBatch};
+        use crate::file::metadata::ParquetMetaDataReader;
+
+        // Create a test parquet file with compression
+        let mut buf = vec![];
+        let col_a: ArrayRef = Arc::new(Int32Array::from((0..100).collect::<Vec<_>>()));
+        let batch = RecordBatch::try_from_iter(vec![("a", col_a)]).unwrap();
+
+        let props = WriterProperties::builder()
+            .set_compression(Compression::SNAPPY)
+            .build();
+
+        let mut writer = ArrowWriter::try_new(&mut buf, batch.schema(), Some(props)).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+
+        let bytes = Bytes::from(buf);
+        let metadata = Arc::new(
+            ParquetMetaDataReader::new()
+                .parse_and_finish(&bytes)
+                .unwrap(),
+        );
+
+        // Load page index
+        let page_index = RowGroupPageIndex::load(&bytes, metadata.clone(), 0).unwrap();
+
+        // Get row group bytes
+        let row_group_start = page_index.row_group_offset();
+        let row_group = metadata.row_group(0);
+        let row_group_end = (0..row_group.num_columns())
+            .map(|i| {
+                let (start, len) = row_group.column(i).byte_range();
+                start + len
+            })
+            .max()
+            .unwrap();
+        let row_group_bytes = bytes.slice(row_group_start as usize..row_group_end as usize);
+
+        // Create reader and push decompressed pages
+        let mut reader = RowGroupPageBasedReader::try_new(&page_index, 1024).unwrap();
+
+        // Decompress and push pages by column to get correct page indices
+        for col_idx in 0..page_index.num_columns() {
+            for (page_idx, page_info) in page_index.pages_for_column(col_idx).iter().enumerate() {
+                let range = page_info.data_byte_range_relative(page_index.row_group_offset());
+                let compressed_page = CompressedPage {
+                    info: page_info.clone(),
+                    data: row_group_bytes.slice(range),
+                };
+                let decompressed = compressed_page.decompress().unwrap();
+                reader.push_page(col_idx, page_idx, decompressed).unwrap();
+            }
+        }
+
+        // Read and verify data
+        let result_batch = reader.read_record_batch().unwrap().unwrap();
+        assert_eq!(result_batch.num_rows(), 100);
+
+        let col_a = result_batch.column(0).as_any().downcast_ref::<Int32Array>().unwrap();
+        for i in 0..100 {
+            assert_eq!(col_a.value(i), i as i32);
+        }
+    }
+
+    #[test]
+    fn test_compressed_page_decompress_uncompressed() {
+        use crate::arrow::page_based_reader::RowGroupPageBasedReader;
+        use crate::arrow::ArrowWriter;
+        use arrow_array::{ArrayRef, Int32Array, RecordBatch};
+        use crate::file::metadata::ParquetMetaDataReader;
+
+        // Create a test parquet file without compression
+        let mut buf = vec![];
+        let col_a: ArrayRef = Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5]));
+        let batch = RecordBatch::try_from_iter(vec![("a", col_a)]).unwrap();
+
+        let mut writer = ArrowWriter::try_new(&mut buf, batch.schema(), None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+
+        let bytes = Bytes::from(buf);
+        let metadata = Arc::new(
+            ParquetMetaDataReader::new()
+                .parse_and_finish(&bytes)
+                .unwrap(),
+        );
+
+        // Load page index
+        let page_index = RowGroupPageIndex::load(&bytes, metadata.clone(), 0).unwrap();
+
+        // Get row group bytes
+        let row_group_start = page_index.row_group_offset();
+        let row_group = metadata.row_group(0);
+        let row_group_end = (0..row_group.num_columns())
+            .map(|i| {
+                let (start, len) = row_group.column(i).byte_range();
+                start + len
+            })
+            .max()
+            .unwrap();
+        let row_group_bytes = bytes.slice(row_group_start as usize..row_group_end as usize);
+
+        // Create reader and push decompressed pages
+        let mut reader = RowGroupPageBasedReader::try_new(&page_index, 1024).unwrap();
+
+        // Decompress and push pages by column
+        for col_idx in 0..page_index.num_columns() {
+            for (page_idx, page_info) in page_index.pages_for_column(col_idx).iter().enumerate() {
+                let range = page_info.data_byte_range_relative(page_index.row_group_offset());
+                let compressed_page = CompressedPage {
+                    info: page_info.clone(),
+                    data: row_group_bytes.slice(range),
+                };
+                let decompressed = compressed_page.decompress().unwrap();
+                reader.push_page(col_idx, page_idx, decompressed).unwrap();
+            }
+        }
+
+        // Read and verify
+        let result_batch = reader.read_record_batch().unwrap().unwrap();
+        assert_eq!(result_batch.num_rows(), 5);
     }
 }

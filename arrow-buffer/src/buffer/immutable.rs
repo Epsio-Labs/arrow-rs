@@ -189,6 +189,10 @@ impl Buffer {
         }
     }
 
+    pub fn bytes(&self) -> &Arc<Bytes> {
+        &self.data
+    }
+
     /// Returns the number of bytes in the buffer
     #[inline]
     pub fn len(&self) -> usize {
