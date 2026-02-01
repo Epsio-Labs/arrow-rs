@@ -49,16 +49,54 @@ use std::cell::UnsafeCell;
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
-use arrow_schema::SchemaRef;
+use arrow_schema::{DataType, Field, FieldRef, Schema, SchemaRef};
 
 use crate::arrow::array_reader::{ArrayReader, ArrayReaderBuilder, RowGroups};
 use crate::arrow::arrow_reader::metrics::ArrowReaderMetrics;
+use crate::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use crate::arrow::schema::{ParquetField, parquet_to_arrow_schema_and_fields};
 use crate::arrow::ProjectionMask;
 use crate::column::page::{Page, PageIterator, PageMetadata, PageReader};
 use crate::errors::{ParquetError, Result};
 use crate::file::metadata::{ParquetMetaData, RowGroupMetaData};
 use crate::file::page_index::page_metadata::RowGroupPageIndex;
+
+
+fn field_with_new_type(field: &FieldRef, new_type: DataType) -> FieldRef {
+    Arc::new(field.as_ref().clone().with_data_type(new_type))
+}
+
+pub fn transform_binary_to_string(schema: &Schema) -> Schema {
+    let transformed_fields: Vec<Arc<Field>> = schema
+        .fields
+        .iter()
+        .map(|field| match field.data_type() {
+            DataType::Binary => field_with_new_type(field, DataType::Utf8View),
+            DataType::LargeBinary => field_with_new_type(field, DataType::Utf8View),
+            DataType::BinaryView => field_with_new_type(field, DataType::Utf8View),
+            _ => Arc::clone(field),
+        })
+        .collect();
+    Schema::new_with_metadata(transformed_fields, schema.metadata.clone())
+}
+
+/// Transform Binary types to Utf8View in a ParquetField tree.
+/// This ensures the array readers produce string arrays instead of binary arrays.
+fn transform_field_binary_to_string(field: &mut ParquetField) {
+    // Transform this field's arrow_type
+    field.arrow_type = match &field.arrow_type {
+        DataType::Binary | DataType::LargeBinary | DataType::BinaryView => DataType::Utf8View,
+        other => other.clone(),
+    };
+
+    // Recursively transform children
+    if let crate::arrow::schema::ParquetFieldType::Group { children } = &mut field.field_type {
+        for child in children.iter_mut() {
+            transform_field_binary_to_string(child);
+        }
+    }
+}
+
 
 /// Indexed page storage for out-of-order page pushing.
 ///
@@ -218,12 +256,17 @@ impl RowGroupPageBasedReader {
         let row_group_idx = page_index.row_group_idx();
 
         let key_value_metadata = metadata.file_metadata().key_value_metadata();
-        let (schema, fields) = parquet_to_arrow_schema_and_fields(
+        let (schema, mut fields) = parquet_to_arrow_schema_and_fields(
             metadata.file_metadata().schema_descr(),
             projection.clone(),
             key_value_metadata,
             &[],
         )?;
+        let schema = transform_binary_to_string(&schema);
+        // Transform fields to match the schema transformation
+        if let Some(ref mut f) = fields {
+            transform_field_binary_to_string(f);
+        }
         let fields = fields.map(Arc::new);
 
         let total_rows = page_index.num_rows();
@@ -382,6 +425,9 @@ impl RowGroupPageBasedReader {
         let mut insufficient_columns = Vec::new();
 
         for col_idx in 0..self.column_pages.len() {
+            if !self.projection.leaf_included(col_idx) {
+                continue;
+            }
             let pushed = self.values_pushed[col_idx];
             let available = pushed.saturating_sub(self.rows_read);
             if available < needed {
@@ -432,6 +478,7 @@ impl RowGroupPageBasedReader {
         };
 
         let metrics = ArrowReaderMetrics::Disabled;
+
         let builder = ArrayReaderBuilder::new(&row_group, &metrics);
         let array_reader = builder.build_array_reader(self.fields.as_deref(), &self.projection)?;
 

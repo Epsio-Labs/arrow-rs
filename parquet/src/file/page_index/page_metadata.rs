@@ -20,6 +20,7 @@
 //! This module provides [`PageInfo`] and [`RowGroupPageIndex`] for loading page metadata
 //! without decompressing page data, enabling external parallel decompression.
 
+use std::collections::HashSet;
 use bytes::Bytes;
 use std::io::Read;
 use std::ops::Range;
@@ -44,8 +45,12 @@ pub struct PageInfo {
     pub row_group_idx: usize,
     /// Column (leaf) index within the schema
     pub column_idx: usize,
-    /// Page index within this column chunk (0-indexed)
+    /// Page index within this column chunk (0-indexed among data pages only).
+    /// Dictionary pages have the same index as the first data page.
     pub page_idx: usize,
+    /// Slot index - the position in the page array for use with `push_page`.
+    /// This is different from `page_idx` because dictionary pages are counted.
+    pub slot_idx: usize,
     /// Absolute offset of the page in the file (start of header)
     pub offset: u64,
     /// Size of the page header in bytes
@@ -296,7 +301,9 @@ impl RowGroupPageIndex {
         reader: &R,
         metadata: Arc<ParquetMetaData>,
         row_group_idx: usize,
+        column_indices: Option<HashSet<usize>>,
     ) -> Result<Self> {
+
         let num_row_groups = metadata.num_row_groups();
         if row_group_idx >= num_row_groups {
             return Err(ParquetError::General(format!(
@@ -309,13 +316,21 @@ impl RowGroupPageIndex {
         let num_columns = row_group.num_columns();
         let mut pages = Vec::with_capacity(num_columns);
 
+        let column_indices = column_indices.unwrap_or_else(|| (0..num_columns).collect());
+
         // Compute row group start offset (minimum of all column chunk offsets)
-        let row_group_offset = (0..num_columns)
-            .map(|i| row_group.column(i).byte_range().0)
+        let row_group_offset = column_indices
+            .iter()
+            .map(|i| row_group.column(*i).byte_range().0)
             .min()
             .unwrap_or(0);
 
-        for column_idx in 0..num_columns {
+
+        for column_idx in (0..num_columns) {
+            if !column_indices.contains(&column_idx) {
+                pages.push(vec![]);
+                continue;
+            }
             let column = row_group.column(column_idx);
             let compression = column.compression();
             let (chunk_start, chunk_len) = column.byte_range();
@@ -323,6 +338,7 @@ impl RowGroupPageIndex {
 
             let column_pages =
                 Self::scan_column_pages(reader, row_group_idx, column_idx, compression, chunk_start, chunk_end)?;
+
             pages.push(column_pages);
         }
 
@@ -346,6 +362,7 @@ impl RowGroupPageIndex {
         let mut pages = Vec::new();
         let mut offset = chunk_start;
         let mut page_idx = 0;
+        let mut slot_idx = 0;
 
         while offset < chunk_end {
             let remaining = chunk_end - offset;
@@ -361,6 +378,7 @@ impl RowGroupPageIndex {
                 row_group_idx,
                 column_idx,
                 page_idx,
+                slot_idx,
                 offset,
                 header_len as u32,
                 compression,
@@ -371,6 +389,7 @@ impl RowGroupPageIndex {
 
             // Move to next page
             offset += header_len as u64 + header.compressed_page_size as u64;
+            slot_idx += 1;
             if !is_dict {
                 page_idx += 1;
             }
@@ -411,6 +430,7 @@ impl RowGroupPageIndex {
         row_group_idx: usize,
         column_idx: usize,
         page_idx: usize,
+        slot_idx: usize,
         offset: u64,
         header_size: u32,
         compression: Compression,
@@ -495,6 +515,7 @@ impl RowGroupPageIndex {
             row_group_idx,
             column_idx,
             page_idx,
+            slot_idx,
             offset,
             header_size,
             compressed_size: header.compressed_page_size as u32,
@@ -630,6 +651,7 @@ mod tests {
             row_group_idx: 0,
             column_idx: 0,
             page_idx: 0,
+            slot_idx: 0,
             offset: 100,
             header_size: 20,
             compressed_size: 500,
