@@ -188,6 +188,7 @@ pub use util::utf8;
 pub mod arrow;
 pub mod column;
 experimental!(mod compression);
+pub use compression::{Codec, create_codec, CodecOptions};
 experimental!(mod encodings);
 pub mod bloom_filter;
 

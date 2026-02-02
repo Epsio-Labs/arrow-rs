@@ -241,6 +241,7 @@ impl RowGroupPageBasedReader {
         Self::try_new_with_projection(page_index, batch_size, ProjectionMask::all())
     }
 
+
     /// Create a new reader from a `RowGroupPageIndex` with a projection mask.
     ///
     /// # Arguments

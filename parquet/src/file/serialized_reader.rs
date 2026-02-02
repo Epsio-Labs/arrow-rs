@@ -451,6 +451,7 @@ pub(crate) fn decode_page(
             // see https://github.com/apache/parquet-format/blob/master/README.md#data-pages
             if decompressed_size > 0 {
                 let compressed = &buffer[offset..];
+                // println!("Decompressing {:?}", decompressed_size);
                 decompressor.decompress(compressed, &mut decompressed, Some(decompressed_size))?;
             }
 

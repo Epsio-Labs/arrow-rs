@@ -437,6 +437,7 @@ where
                             let mut offset = 0;
 
                             if max_rep_level > 0 {
+                                panic!("OH NO");
                                 let (bytes_read, level_data) = parse_v1_level(
                                     max_rep_level,
                                     num_values,

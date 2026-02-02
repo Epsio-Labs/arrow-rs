@@ -231,7 +231,11 @@ mod snappy_codec {
                 None => decompress_len(input_buf)?,
             };
             let offset = output_buf.len();
-            output_buf.resize(offset + len, 0);
+            // output_buf.resize(offset + len, 0);
+            output_buf.reserve(len);
+            unsafe  {
+                output_buf.set_len(len + offset);
+            }
             self.decoder
                 .decompress(input_buf, &mut output_buf[offset..])
                 .map_err(|e| e.into())

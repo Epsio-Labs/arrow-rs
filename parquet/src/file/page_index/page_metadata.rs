@@ -27,6 +27,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use crate::basic::{Compression, Encoding, PageType};
+use crate::Codec;
 use crate::column::page::Page;
 use crate::compression::{CodecOptions, create_codec};
 use crate::errors::{ParquetError, Result};
@@ -177,12 +178,9 @@ impl CompressedPage {
     /// let page = compressed_page.decompress(&CodecOptions::default())?;
     /// reader.push_page(column_idx, page_idx, page)?;
     /// ```
-    pub fn decompress(&self) -> Result<Page> {
+    pub fn decompress(&self, codec: &mut Option<Box<dyn Codec>>) -> Result<Page> {
         let info = &self.info;
         let compressed_data = &self.data;
-
-        // Get codec for decompression (None for UNCOMPRESSED)
-        let mut codec = create_codec(info.compression, &CodecOptions::default())?;
 
         // For DATA_PAGE_V2, rep/def levels are stored uncompressed at the beginning.
         // Only the values portion may be compressed, controlled by is_compressed flag.
@@ -207,12 +205,14 @@ impl CompressedPage {
                     return Err(ParquetError::General("Invalid page header".to_string()));
                 }
                 let decompressed_size = uncompressed_size - offset;
+
                 let mut decompressed = Vec::with_capacity(uncompressed_size);
                 // Copy uncompressed prefix (rep/def levels for V2)
                 decompressed.extend_from_slice(&compressed_data[..offset]);
                 // Decompress the rest if there's data to decompress
                 if decompressed_size > 0 {
                     let compressed = &compressed_data[offset..];
+                    // println!("Decompressing {:?}", decompressed_size);
                     decompressor.decompress(compressed, &mut decompressed, Some(decompressed_size))?;
                 }
 
@@ -368,10 +368,10 @@ impl RowGroupPageIndex {
             let remaining = chunk_end - offset;
             // Read enough bytes for the header (headers are typically small, but can vary)
             // We read a reasonable chunk and parse from it
-            let read_len = std::cmp::min(remaining, 1024) as usize;
-            let buffer = reader.get_bytes(offset, read_len)?;
+            let read_len = std::cmp::min(remaining, 4096) as usize;
+            let buffer = reader.get_bytes(offset, read_len).unwrap();
 
-            let (header_len, header) = Self::read_page_header(&buffer)?;
+            let (header_len, header) = Self::read_page_header(&buffer).unwrap();
 
             let page_info = Self::header_to_page_info(
                 &header,
@@ -382,7 +382,7 @@ impl RowGroupPageIndex {
                 offset,
                 header_len as u32,
                 compression,
-            )?;
+            ).unwrap();
 
             let is_dict = page_info.is_dictionary;
             pages.push(page_info);
