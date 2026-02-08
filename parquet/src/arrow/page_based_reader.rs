@@ -48,8 +48,10 @@
 use std::cell::UnsafeCell;
 use std::sync::Arc;
 
-use arrow_array::RecordBatch;
+use arrow_array::{BooleanArray, RecordBatch};
+use arrow_buffer::BooleanBufferBuilder;
 use arrow_schema::{DataType, Field, FieldRef, Schema, SchemaRef};
+use arrow_select::filter::filter_record_batch;
 
 use crate::arrow::array_reader::{ArrayReader, ArrayReaderBuilder, RowGroups};
 use crate::arrow::arrow_reader::metrics::ArrowReaderMetrics;
@@ -217,6 +219,11 @@ pub struct RowGroupPageBasedReader {
     rows_read: usize,
     /// Total rows in this row group
     total_rows: usize,
+    /// Per-page value ranges: page_value_ranges[column_idx][slot_idx] = (start, end)
+    page_value_ranges: Vec<Vec<(u64, u64)>>,
+    /// Row-level selection mask (lazily initialized on first mask push).
+    /// Default is all-true (select all rows).
+    row_mask: Option<BooleanBufferBuilder>,
 }
 
 impl std::fmt::Debug for RowGroupPageBasedReader {
@@ -280,6 +287,18 @@ impl RowGroupPageBasedReader {
             .map(|&count| Arc::new(IndexedPageSlots::new(count)))
             .collect();
 
+        // Store per-page value ranges for mask placement
+        let page_value_ranges: Vec<Vec<(u64, u64)>> = page_index
+            .pages()
+            .iter()
+            .map(|column_pages| {
+                column_pages
+                    .iter()
+                    .map(|p| (p.values_start_offset, p.values_end_offset))
+                    .collect()
+            })
+            .collect();
+
         Ok(Self {
             metadata,
             row_group_idx,
@@ -292,6 +311,8 @@ impl RowGroupPageBasedReader {
             values_pushed: vec![0; num_columns],
             rows_read: 0,
             total_rows,
+            page_value_ranges,
+            row_mask: None,
         })
     }
 
@@ -315,6 +336,10 @@ impl RowGroupPageBasedReader {
         self.column_pages.len()
     }
 
+    pub fn total_rows(&self) -> usize {
+        self.total_rows
+    }
+
     /// Push a pre-decompressed page for a column.
     ///
     /// Pages can be pushed in any order. The reader will consume them
@@ -324,11 +349,15 @@ impl RowGroupPageBasedReader {
     /// * `column_idx` - The leaf column index
     /// * `page_idx` - The page index within this column (0 = first page, may be dictionary)
     /// * `page` - The pre-decompressed page
+    /// * `mask` - Optional selection mask for this page. Length must match the page's
+    ///   value count. When `None`, all values are selected. Only needs to be provided
+    ///   once per row range (any column); duplicate masks for the same rows are fine.
     pub fn push_page(
         &mut self,
         column_idx: usize,
         page_idx: usize,
         page: Page,
+        mask: Option<&BooleanArray>,
     ) -> Result<()> {
         if column_idx >= self.column_pages.len() {
             return Err(ParquetError::General(format!(
@@ -355,6 +384,24 @@ impl RowGroupPageBasedReader {
             Page::DictionaryPage { .. } => 0, // Dictionary pages don't contribute rows
         };
         self.values_pushed[column_idx] += num_values;
+
+        // Apply mask to the row-level selection
+        if let Some(mask) = mask {
+            let (start, _end) = self.page_value_ranges[column_idx][page_idx];
+            let start = start as usize;
+
+            // Lazily initialize the row mask with all-true
+            if self.row_mask.is_none() {
+                let mut builder = BooleanBufferBuilder::new(self.total_rows);
+                builder.append_n(self.total_rows, true);
+                self.row_mask = Some(builder);
+            }
+
+            let row_mask = self.row_mask.as_mut().unwrap();
+            for (i, val) in mask.values().iter().enumerate() {
+                row_mask.set_bit(start + i, val);
+            }
+        }
 
         // SAFETY: We have &mut self, so no other access is possible
         unsafe {
@@ -418,7 +465,17 @@ impl RowGroupPageBasedReader {
             })?;
 
         let batch = RecordBatch::from(struct_array);
-        Ok(Some(batch))
+
+        // Apply row-level selection mask if present
+        if let Some(ref row_mask) = self.row_mask {
+            let mask_buf = row_mask.finish_cloned();
+            let mask_slice = mask_buf.slice(self.rows_read - read, read);
+            let mask_array = BooleanArray::new(mask_slice, None);
+            let filtered = filter_record_batch(&batch, &mask_array)?;
+            Ok(Some(filtered))
+        } else {
+            Ok(Some(batch))
+        }
     }
 
     /// Check that all columns have enough values for the requested read.
@@ -468,6 +525,10 @@ impl RowGroupPageBasedReader {
     /// Get the number of rows remaining.
     pub fn rows_remaining(&self) -> usize {
         self.total_rows.saturating_sub(self.rows_read)
+    }
+
+    pub fn rows_read(&self) -> usize {
+        self.rows_read
     }
 
     /// Build the array reader.
@@ -687,7 +748,7 @@ mod tests {
 
         let mut reader = RowGroupPageBasedReader::try_new(&page_index, 1024).unwrap();
         for (idx, page) in col0_pages.into_iter().enumerate() {
-            reader.push_page(0, idx, page).unwrap();
+            reader.push_page(0, idx, page, None).unwrap();
         }
         // Don't push pages for column 1
 
@@ -748,10 +809,10 @@ mod tests {
 
         // Push pages in REVERSE order
         for (idx, page) in col1_pages.into_iter().enumerate().rev() {
-            reader.push_page(1, idx, page).unwrap();
+            reader.push_page(1, idx, page, None).unwrap();
         }
         for (idx, page) in col0_pages.into_iter().enumerate().rev() {
-            reader.push_page(0, idx, page).unwrap();
+            reader.push_page(0, idx, page, None).unwrap();
         }
 
         // Read should succeed
@@ -815,9 +876,9 @@ mod tests {
         let mut reader = RowGroupPageBasedReader::try_new(&page_index, 10).unwrap();
 
         // Push only first page of col0 and all pages of col1
-        reader.push_page(0, 0, col0_pages.remove(0)).unwrap();
+        reader.push_page(0, 0, col0_pages.remove(0), None).unwrap();
         for (idx, page) in col1_pages.into_iter().enumerate() {
-            reader.push_page(1, idx, page).unwrap();
+            reader.push_page(1, idx, page, None).unwrap();
         }
 
         // Should fail - col0 doesn't have enough data
@@ -826,7 +887,7 @@ mod tests {
 
         // Push remaining pages for col0
         for (idx, page) in col0_pages.into_iter().enumerate() {
-            reader.push_page(0, idx + 1, page).unwrap();
+            reader.push_page(0, idx + 1, page, None).unwrap();
         }
 
         // Now should succeed
@@ -850,12 +911,12 @@ mod tests {
         };
 
         // Column out of bounds
-        let result = reader.push_page(999, 0, page.clone());
+        let result = reader.push_page(999, 0, page.clone(), None);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Column index"));
 
         // Page out of bounds
-        let result = reader.push_page(0, 999, page);
+        let result = reader.push_page(0, 999, page, None);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Page index"));
     }

@@ -390,7 +390,7 @@ impl RowGroupPageIndex {
                 header_len as u32,
                 compression,
                 values_offset,
-            ).unwrap();
+            )?;
 
             let is_dict = page_info.is_dictionary;
             if !is_dict {
@@ -752,7 +752,7 @@ mod tests {
                     data: row_group_bytes.slice(range),
                 };
                 let decompressed = compressed_page.decompress().unwrap();
-                reader.push_page(col_idx, page_idx, decompressed).unwrap();
+                reader.push_page(col_idx, page_idx, decompressed, None).unwrap();
             }
         }
 
@@ -816,7 +816,7 @@ mod tests {
                     data: row_group_bytes.slice(range),
                 };
                 let decompressed = compressed_page.decompress().unwrap();
-                reader.push_page(col_idx, page_idx, decompressed).unwrap();
+                reader.push_page(col_idx, page_idx, decompressed, None).unwrap();
             }
         }
 
