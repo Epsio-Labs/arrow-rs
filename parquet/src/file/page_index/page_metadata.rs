@@ -86,6 +86,12 @@ pub struct PageInfo {
     pub is_compressed: Option<bool>,
     /// For DICTIONARY_PAGE: whether sorted
     pub is_sorted: Option<bool>,
+    /// Start offset of values in this page (0-indexed within the column chunk).
+    /// For dictionary pages this is 0.
+    pub values_start_offset: u64,
+    /// End offset of values (exclusive) in this page within the column chunk.
+    /// For dictionary pages this is 0.
+    pub values_end_offset: u64,
 }
 
 impl PageInfo {
@@ -363,6 +369,7 @@ impl RowGroupPageIndex {
         let mut offset = chunk_start;
         let mut page_idx = 0;
         let mut slot_idx = 0;
+        let mut values_offset: u64 = 0;
 
         while offset < chunk_end {
             let remaining = chunk_end - offset;
@@ -382,9 +389,13 @@ impl RowGroupPageIndex {
                 offset,
                 header_len as u32,
                 compression,
+                values_offset,
             ).unwrap();
 
             let is_dict = page_info.is_dictionary;
+            if !is_dict {
+                values_offset += page_info.num_values as u64;
+            }
             pages.push(page_info);
 
             // Move to next page
@@ -434,6 +445,7 @@ impl RowGroupPageIndex {
         offset: u64,
         header_size: u32,
         compression: Compression,
+        values_offset: u64,
     ) -> Result<PageInfo> {
         let page_type = header.r#type;
         let is_dictionary = page_type == PageType::DICTIONARY_PAGE;
@@ -511,6 +523,12 @@ impl RowGroupPageIndex {
             }
         };
 
+        let (values_start_offset, values_end_offset) = if is_dictionary {
+            (0, 0)
+        } else {
+            (values_offset, values_offset + num_values as u64)
+        };
+
         Ok(PageInfo {
             row_group_idx,
             column_idx,
@@ -533,6 +551,8 @@ impl RowGroupPageIndex {
             num_rows,
             is_compressed,
             is_sorted,
+            values_start_offset,
+            values_end_offset,
         })
     }
 
@@ -669,6 +689,8 @@ mod tests {
             num_rows: None,
             is_compressed: None,
             is_sorted: None,
+            values_start_offset: 0,
+            values_end_offset: 100,
         };
 
         assert_eq!(page.data_byte_range(), 120..620);
