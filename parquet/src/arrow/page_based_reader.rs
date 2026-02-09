@@ -179,6 +179,32 @@ impl IndexedPageSlots {
         // Safe since the length is immutable after creation
         unsafe { (*self.inner.get()).pages.len() }
     }
+
+    /// Count values in contiguous filled slots starting from the current read position.
+    ///
+    /// Only counts values from slots that form an unbroken sequence from `next_read_idx`.
+    /// Stops at the first unfilled (None) slot.
+    ///
+    /// # Safety
+    /// Caller must ensure exclusive access.
+    #[inline]
+    unsafe fn contiguous_values_from_current(&self) -> usize {
+        let inner = &*self.inner.get();
+        let mut values = 0;
+        for i in inner.next_read_idx..inner.pages.len() {
+            match &inner.pages[i] {
+                Some(page) => {
+                    values += match page {
+                        Page::DataPage { num_values, .. } => *num_values as usize,
+                        Page::DataPageV2 { num_values, .. } => *num_values as usize,
+                        Page::DictionaryPage { .. } => 0,
+                    };
+                }
+                None => break,
+            }
+        }
+        values
+    }
 }
 
 // SAFETY: Access is synchronized through &mut self on RowGroupPageBasedReader.
@@ -213,8 +239,15 @@ pub struct RowGroupPageBasedReader {
     column_pages: Vec<SharedIndexedSlots>,
     /// Current array reader (lazily built)
     array_reader: Option<Box<dyn ArrayReader>>,
-    /// Total values pushed to each column (used to calculate available values)
+    /// Contiguous values available for each column from the start.
+    /// Only includes values from an unbroken sequence of filled slots (0..frontier).
     values_pushed: Vec<usize>,
+    /// Per-column: which page slots have been filled
+    slots_filled: Vec<Vec<bool>>,
+    /// Per-column: value count for each page slot
+    slot_value_counts: Vec<Vec<usize>>,
+    /// Per-column: index of first unfilled slot (all slots before this are filled)
+    contiguous_frontier: Vec<usize>,
     /// Number of rows read from this row group
     rows_read: usize,
     /// Total rows in this row group
@@ -299,6 +332,15 @@ impl RowGroupPageBasedReader {
             })
             .collect();
 
+        let slots_filled: Vec<Vec<bool>> = pages_per_column
+            .iter()
+            .map(|&c| vec![false; c])
+            .collect();
+        let slot_value_counts: Vec<Vec<usize>> = pages_per_column
+            .iter()
+            .map(|&c| vec![0; c])
+            .collect();
+
         Ok(Self {
             metadata,
             row_group_idx,
@@ -309,6 +351,9 @@ impl RowGroupPageBasedReader {
             column_pages,
             array_reader: None,
             values_pushed: vec![0; num_columns],
+            slots_filled,
+            slot_value_counts,
+            contiguous_frontier: vec![0; num_columns],
             rows_read: 0,
             total_rows,
             page_value_ranges,
@@ -383,7 +428,26 @@ impl RowGroupPageBasedReader {
             Page::DataPageV2 { num_values, .. } => *num_values as usize,
             Page::DictionaryPage { .. } => 0, // Dictionary pages don't contribute rows
         };
-        self.values_pushed[column_idx] += num_values;
+
+        // Record slot metadata
+        self.slots_filled[column_idx][page_idx] = true;
+        self.slot_value_counts[column_idx][page_idx] = num_values;
+
+        // Advance contiguous frontier through consecutive filled slots
+        let frontier = &mut self.contiguous_frontier[column_idx];
+        while *frontier < self.slots_filled[column_idx].len()
+            && self.slots_filled[column_idx][*frontier]
+        {
+            *frontier += 1;
+        }
+
+        // Recompute values_pushed as sum of contiguous filled slots only.
+        // This prevents counting out-of-order pages that the array reader
+        // can't actually consume yet.
+        self.values_pushed[column_idx] = self.slot_value_counts[column_idx]
+            [..self.contiguous_frontier[column_idx]]
+            .iter()
+            .sum();
 
         // Apply mask to the row-level selection
         if let Some(mask) = mask {
@@ -712,7 +776,7 @@ mod tests {
     #[test]
     fn test_reader_creation() {
         let (bytes, metadata) = create_test_parquet();
-        let page_index = RowGroupPageIndex::load(&bytes, metadata.clone(), 0).unwrap();
+        let page_index = RowGroupPageIndex::load(&bytes, metadata.clone(), 0, None).unwrap();
         let reader = RowGroupPageBasedReader::try_new(&page_index, 1024).unwrap();
 
         assert_eq!(reader.row_group_idx(), 0);
@@ -723,7 +787,7 @@ mod tests {
     #[test]
     fn test_no_pages_returns_error() {
         let (bytes, metadata) = create_test_parquet();
-        let page_index = RowGroupPageIndex::load(&bytes, metadata.clone(), 0).unwrap();
+        let page_index = RowGroupPageIndex::load(&bytes, metadata.clone(), 0, None).unwrap();
         let mut reader = RowGroupPageBasedReader::try_new(&page_index, 1024).unwrap();
 
         let result = reader.read_record_batch();
@@ -734,7 +798,7 @@ mod tests {
     #[test]
     fn test_partial_pages_returns_clear_error() {
         let (bytes, metadata) = create_multi_column_parquet();
-        let page_index = RowGroupPageIndex::load(&bytes, metadata.clone(), 0).unwrap();
+        let page_index = RowGroupPageIndex::load(&bytes, metadata.clone(), 0, None).unwrap();
 
         // Get pages for column 0 only
         let file_reader = SerializedFileReader::new(bytes.clone()).unwrap();
@@ -787,7 +851,7 @@ mod tests {
                 .unwrap(),
         );
 
-        let page_index = RowGroupPageIndex::load(&bytes, metadata.clone(), 0).unwrap();
+        let page_index = RowGroupPageIndex::load(&bytes, metadata.clone(), 0, None).unwrap();
 
         // Get pages from file
         let file_reader = SerializedFileReader::new(bytes.clone()).unwrap();
@@ -856,7 +920,7 @@ mod tests {
                 .unwrap(),
         );
 
-        let page_index = RowGroupPageIndex::load(&bytes, metadata.clone(), 0).unwrap();
+        let page_index = RowGroupPageIndex::load(&bytes, metadata.clone(), 0, None).unwrap();
 
         let file_reader = SerializedFileReader::new(bytes.clone()).unwrap();
         let row_group_reader = file_reader.get_row_group(0).unwrap();
@@ -895,10 +959,119 @@ mod tests {
         assert_eq!(batch.num_rows(), 10);
     }
 
+    /// Regression test: pushing pages with a gap in slot order must not allow
+    /// a read that would partially consume pages from other columns.
+    ///
+    /// Before the fix, `values_pushed` counted all pushed values regardless of
+    /// slot order. This let `check_columns_have_values` pass when a column had
+    /// a gap (e.g. slots 0 and 2 filled, slot 1 missing). The array reader would
+    /// then consume pages from columns that *were* contiguous, and return None
+    /// for the gapped column. When the missing page finally arrived, the consumed
+    /// columns' pages were gone, causing an infinite retry loop (hang).
+    #[test]
+    fn test_non_contiguous_pages_must_not_allow_read() {
+        // Create a file with multiple pages per column by writing many small batches
+        let num_rows: i32 = 100;
+        let rows_per_batch: i32 = 10;
+        let mut buf = vec![];
+
+        let schema = {
+            let col_a: ArrayRef = Arc::new(Int32Array::from(vec![0]));
+            let col_b: ArrayRef = Arc::new(Int32Array::from(vec![0]));
+            RecordBatch::try_from_iter(vec![("a", col_a), ("b", col_b)]).unwrap().schema()
+        };
+
+        let props = WriterProperties::builder()
+            .set_data_page_row_count_limit(rows_per_batch as usize)
+            .set_max_row_group_size(num_rows as usize)
+            .build();
+
+        let mut writer = ArrowWriter::try_new(&mut buf, schema, Some(props)).unwrap();
+        // Write in small batches to force multiple pages
+        for start in (0..num_rows).step_by(rows_per_batch as usize) {
+            let end = std::cmp::min(start + rows_per_batch, num_rows);
+            let col_a: ArrayRef = Arc::new(Int32Array::from((start..end).collect::<Vec<_>>()));
+            let col_b: ArrayRef = Arc::new(Int32Array::from((1000 + start..1000 + end).collect::<Vec<_>>()));
+            let batch = RecordBatch::try_from_iter(vec![("a", col_a), ("b", col_b)]).unwrap();
+            writer.write(&batch).unwrap();
+        }
+        writer.close().unwrap();
+
+        let bytes = Bytes::from(buf);
+
+        use crate::file::metadata::ParquetMetaDataReader;
+        let metadata = Arc::new(
+            ParquetMetaDataReader::new()
+                .parse_and_finish(&bytes)
+                .unwrap(),
+        );
+
+        let page_index = RowGroupPageIndex::load(&bytes, metadata.clone(), 0, None).unwrap();
+
+        let file_reader = SerializedFileReader::new(bytes.clone()).unwrap();
+        let row_group_reader = file_reader.get_row_group(0).unwrap();
+
+        let mut col0_pages = vec![];
+        let mut page_reader = row_group_reader.get_column_page_reader(0).unwrap();
+        while let Some(page) = page_reader.get_next_page().unwrap() {
+            col0_pages.push(page);
+        }
+
+        let mut col1_pages = vec![];
+        let mut page_reader = row_group_reader.get_column_page_reader(1).unwrap();
+        while let Some(page) = page_reader.get_next_page().unwrap() {
+            col1_pages.push(page);
+        }
+
+        assert!(col0_pages.len() >= 3, "need multiple pages for this test");
+
+        let mut reader = RowGroupPageBasedReader::try_new(&page_index, 1024).unwrap();
+
+        // Push ALL pages for col1 (contiguous, ready to read)
+        for (idx, page) in col1_pages.into_iter().enumerate() {
+            reader.push_page(1, idx, page, None).unwrap();
+        }
+
+        // Push col0 pages with a GAP: slot 0 and slot 2, but NOT slot 1.
+        // This simulates the work-stealing scenario where pages arrive out of order.
+        reader.push_page(0, 0, col0_pages[0].clone(), None).unwrap();
+        reader.push_page(0, 2, col0_pages[2].clone(), None).unwrap();
+        // Remaining slots (1, 3, ...) are NOT pushed yet.
+
+        // Read must fail: col0 has a gap at slot 1, so the array reader
+        // cannot consume pages sequentially.
+        let result = reader.read_record_batch();
+        assert!(result.is_err(), "read should fail when pages have a gap");
+
+        // Now fill the gap and push remaining pages
+        for (idx, page) in col0_pages.into_iter().enumerate() {
+            // skip slots 0 and 2 which are already pushed
+            if idx == 0 || idx == 2 {
+                continue;
+            }
+            reader.push_page(0, idx, page, None).unwrap();
+        }
+
+        // Now read should succeed with correct data
+        let mut total_rows_read = 0;
+        while let Some(batch) = reader.read_record_batch().unwrap() {
+            let col_a = batch.column(0).as_any().downcast_ref::<Int32Array>().unwrap();
+            let col_b = batch.column(1).as_any().downcast_ref::<Int32Array>().unwrap();
+            for i in 0..batch.num_rows() {
+                let row = total_rows_read + i;
+                assert_eq!(col_a.value(i), row as i32);
+                assert_eq!(col_b.value(i), 1000 + row as i32);
+            }
+            total_rows_read += batch.num_rows();
+        }
+        assert_eq!(total_rows_read, num_rows as usize);
+        assert!(!reader.has_more_rows());
+    }
+
     #[test]
     fn test_page_index_out_of_bounds() {
         let (bytes, metadata) = create_test_parquet();
-        let page_index = RowGroupPageIndex::load(&bytes, metadata.clone(), 0).unwrap();
+        let page_index = RowGroupPageIndex::load(&bytes, metadata.clone(), 0, None).unwrap();
         let mut reader = RowGroupPageBasedReader::try_new(&page_index, 1024).unwrap();
 
         let page = Page::DataPage {

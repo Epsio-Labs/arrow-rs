@@ -726,7 +726,7 @@ mod tests {
         );
 
         // Load page index
-        let page_index = RowGroupPageIndex::load(&bytes, metadata.clone(), 0).unwrap();
+        let page_index = RowGroupPageIndex::load(&bytes, metadata.clone(), 0, None).unwrap();
 
         // Get row group bytes
         let row_group_start = page_index.row_group_offset();
@@ -742,6 +742,7 @@ mod tests {
 
         // Create reader and push decompressed pages
         let mut reader = RowGroupPageBasedReader::try_new(&page_index, 1024).unwrap();
+        let mut codec = create_codec(Compression::SNAPPY, &CodecOptions::default()).unwrap();
 
         // Decompress and push pages by column to get correct page indices
         for col_idx in 0..page_index.num_columns() {
@@ -751,7 +752,7 @@ mod tests {
                     info: page_info.clone(),
                     data: row_group_bytes.slice(range),
                 };
-                let decompressed = compressed_page.decompress().unwrap();
+                let decompressed = compressed_page.decompress(&mut codec).unwrap();
                 reader.push_page(col_idx, page_idx, decompressed, None).unwrap();
             }
         }
@@ -790,7 +791,7 @@ mod tests {
         );
 
         // Load page index
-        let page_index = RowGroupPageIndex::load(&bytes, metadata.clone(), 0).unwrap();
+        let page_index = RowGroupPageIndex::load(&bytes, metadata.clone(), 0, None).unwrap();
 
         // Get row group bytes
         let row_group_start = page_index.row_group_offset();
@@ -806,6 +807,7 @@ mod tests {
 
         // Create reader and push decompressed pages
         let mut reader = RowGroupPageBasedReader::try_new(&page_index, 1024).unwrap();
+        let mut codec: Option<Box<dyn Codec>> = None; // uncompressed
 
         // Decompress and push pages by column
         for col_idx in 0..page_index.num_columns() {
@@ -815,7 +817,7 @@ mod tests {
                     info: page_info.clone(),
                     data: row_group_bytes.slice(range),
                 };
-                let decompressed = compressed_page.decompress().unwrap();
+                let decompressed = compressed_page.decompress(&mut codec).unwrap();
                 reader.push_page(col_idx, page_idx, decompressed, None).unwrap();
             }
         }
