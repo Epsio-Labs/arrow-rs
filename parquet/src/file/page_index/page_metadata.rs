@@ -219,7 +219,7 @@ impl CompressedPage {
                 if decompressed_size > 0 {
                     let compressed = &compressed_data[offset..];
                     // println!("Decompressing {:?}", decompressed_size);
-                    decompressor.decompress(compressed, &mut decompressed, Some(decompressed_size))?;
+                    decompressor.decompress(&compressed, &mut decompressed, Some(decompressed_size))?;
                 }
 
                 if decompressed.len() != uncompressed_size {
@@ -608,21 +608,37 @@ impl RowGroupPageIndex {
     /// # Returns
     /// A vector of vectors, where `result[column_idx]` contains the compressed pages
     /// for that column in order (dictionary page first if present, then data pages).
-    pub fn extract_compressed_pages(&self, row_group_bytes: &Bytes) -> impl Iterator<Item = CompressedPage> {
-        self.pages
-            .iter()
-            .map(|column_pages| {
-                column_pages
-                    .iter()
-                    .map(|page_info| {
-                        let range = page_info.data_byte_range_relative(self.row_group_offset);
-                        CompressedPage {
-                            info: page_info.clone(),
-                            data: row_group_bytes.slice(range),
-                        }
-                    })
+    pub fn extract_compressed_pages(&self, column_idx: usize, row_group_bytes: &Bytes, base_offset: u64) -> impl Iterator<Item = CompressedPage> {
+        self.pages[column_idx].iter()
+            .map(move |page_info| {
+                let range = page_info.data_byte_range_relative(base_offset);
+                assert!(
+                    range.end <= row_group_bytes.len(),
+                    "Page range {}..{} exceeds buffer len {} (page
+  offset={}, base_offset={}, header_size={}, compressed_size={})",
+                    range.start, range.end, row_group_bytes.len(),
+                    page_info.offset, base_offset,
+                    page_info.header_size, page_info.compressed_size
+                );
+                CompressedPage {
+                    info: page_info.clone(),
+                    data: row_group_bytes.slice(range),
+                }
             })
-            .flatten()
+        // self.pages
+        //     .iter()
+        //     .map(|column_pages| {
+        //         column_pages
+        //             .iter()
+        //             .map(|page_info| {
+        //                 let range = page_info.data_byte_range_relative(self.row_group_offset);
+        //                 CompressedPage {
+        //                     info: page_info.clone(),
+        //                     data: row_group_bytes.slice(range),
+        //                 }
+        //             })
+        //     })
+        //     .flatten()
     }
 
     /// Extract a single compressed page from row group bytes.
