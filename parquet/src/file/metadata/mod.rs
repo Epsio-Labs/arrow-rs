@@ -92,7 +92,7 @@ mod options;
 mod parser;
 mod push_decoder;
 pub(crate) mod reader;
-pub(crate) mod thrift;
+pub mod thrift;
 mod writer;
 
 use crate::basic::{EncodingMask, PageType};

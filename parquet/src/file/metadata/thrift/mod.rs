@@ -1174,7 +1174,7 @@ impl DataPageHeaderV2 {
 }
 
 thrift_struct!(
-pub(crate) struct PageHeader {
+pub struct PageHeader {
   /// the type of the page: indicates which of the *_header fields is set
   1: required PageType r#type
 
@@ -1199,7 +1199,7 @@ impl PageHeader {
     // reader that skips reading page statistics. obtained by running
     // `cargo expand -p parquet --all-features --lib file::metadata::thrift`
     // and modifying the impl of `read_thrift`
-    pub(crate) fn read_thrift_without_stats<'a, R>(prot: &mut R) -> Result<Self>
+    pub fn read_thrift_without_stats<'a, R>(prot: &mut R) -> Result<Self>
     where
         R: ThriftCompactInputProtocol<'a>,
     {

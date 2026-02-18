@@ -571,12 +571,12 @@ impl<'b, 'a: 'b> ThriftCompactInputProtocol<'b> for ThriftSliceInputProtocol<'a>
 ///
 /// Note that this is only intended for use in reading Parquet page headers. This will panic
 /// if Thrift `binary` data is encountered because a slice of that data cannot be returned.
-pub(crate) struct ThriftReadInputProtocol<R: Read> {
+pub struct ThriftReadInputProtocol<R: Read> {
     reader: R,
 }
 
 impl<R: Read> ThriftReadInputProtocol<R> {
-    pub(crate) fn new(reader: R) -> Self {
+    pub fn new(reader: R) -> Self {
         Self { reader }
     }
 }
