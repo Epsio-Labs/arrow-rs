@@ -1280,6 +1280,54 @@ impl PageHeader {
             data_page_header_v2,
         })
     }
+
+    pub fn data_page_num_values(&self) -> i32 {
+        self.data_page_header.as_ref().unwrap().num_values
+    }
+
+    pub fn data_page_encoding(&self) -> Encoding {
+        self.data_page_header.as_ref().unwrap().encoding
+    }
+
+    pub fn dict_page_num_values(&self) -> i32 {
+        self.dictionary_page_header.as_ref().unwrap().num_values
+    }
+
+    pub fn for_data_page(num_values: i32, encoding: Encoding) -> Self {
+        Self {
+            r#type: PageType::DATA_PAGE,
+            uncompressed_page_size: 0,
+            compressed_page_size: 0,
+            crc: None,
+            data_page_header: Some(DataPageHeader {
+                num_values,
+                encoding,
+                definition_level_encoding: Encoding::RLE,
+                repetition_level_encoding: Encoding::RLE,
+                statistics: None,
+            }),
+            index_page_header: None,
+            dictionary_page_header: None,
+            data_page_header_v2: None,
+        }
+    }
+
+    pub fn for_dict_page(num_values: i32) -> Self {
+        Self {
+            r#type: PageType::DICTIONARY_PAGE,
+            uncompressed_page_size: 0,
+            compressed_page_size: 0,
+            crc: None,
+            data_page_header: None,
+            index_page_header: None,
+            dictionary_page_header: Some(DictionaryPageHeader {
+                num_values,
+                encoding: Encoding::PLAIN,
+                is_sorted: None,
+            }),
+            data_page_header_v2: None,
+        }
+    }
 }
 
 /////////////////////////////////////////////////
