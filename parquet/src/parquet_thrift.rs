@@ -706,13 +706,13 @@ where
 /// but is instead intended for use by implementers of [`WriteThrift`] and [`WriteThriftField`].
 ///
 /// [compact output]: https://github.com/apache/thrift/blob/master/doc/specs/thrift-compact-protocol.md
-pub(crate) struct ThriftCompactOutputProtocol<W: Write> {
+pub struct ThriftCompactOutputProtocol<W: Write> {
     writer: W,
 }
 
 impl<W: Write> ThriftCompactOutputProtocol<W> {
     /// Create a new `ThriftCompactOutputProtocol` wrapping the byte sink `writer`.
-    pub(crate) fn new(writer: W) -> Self {
+    pub fn new(writer: W) -> Self {
         Self { writer }
     }
 

@@ -958,11 +958,11 @@ impl OrdinalAssigner {
 }
 
 thrift_struct!(
-    pub(crate) struct IndexPageHeader {}
+    pub struct IndexPageHeader {}
 );
 
 thrift_struct!(
-pub(crate) struct DictionaryPageHeader {
+pub struct DictionaryPageHeader {
   /// Number of values in the dictionary
   1: required i32 num_values;
 
@@ -982,7 +982,7 @@ thrift_struct!(
 /// a huge problem since this crate no longer reads the page header statistics by default.
 ///
 /// [`Read`]: crate::parquet_thrift::ThriftReadInputProtocol
-pub(crate) struct PageStatistics {
+pub struct PageStatistics {
    1: optional binary max;
    2: optional binary min;
    3: optional i64 null_count;
@@ -995,7 +995,7 @@ pub(crate) struct PageStatistics {
 );
 
 thrift_struct!(
-pub(crate) struct DataPageHeader {
+pub struct DataPageHeader {
   1: required i32 num_values
   2: required Encoding encoding
   3: required Encoding definition_level_encoding;
@@ -1071,7 +1071,7 @@ impl DataPageHeader {
 }
 
 thrift_struct!(
-pub(crate) struct DataPageHeaderV2 {
+pub struct DataPageHeaderV2 {
   1: required i32 num_values
   2: required i32 num_nulls
   3: required i32 num_rows
